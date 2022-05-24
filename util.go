@@ -11,9 +11,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -143,7 +145,6 @@ func GetFileInfo(path string) os.FileInfo {
 }
 
 func NewPathInfo(parent string, entry os.FileInfo) *PathInfo {
-	fmt.Printf("NewPathInfo parent: %s, entry: %+v\n", parent, entry)
 	pathInfo := &PathInfo{Parent: parent, FileInfo: entry}
 	if entry.Mode()&os.ModeSymlink != 0 {
 		symlinkDest := ProcessErrorArg(os.Readlink(filepath.Join(parent, entry.Name()))).(string)
@@ -165,7 +166,6 @@ func ReadDirSorted(dirname string) []*PathInfo {
 		return entries
 	}
 	for _, fileInfo := range ProcessErrorArg(ioutil.ReadDir(dirname)).([]os.FileInfo) {
-		fmt.Printf("ReadDirSorted dirname: %s, fileInfo: %+v\n", dirname, fileInfo)
 		entries = append(entries, NewPathInfo(dirname, fileInfo))
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -180,7 +180,7 @@ func ReadDirSorted(dirname string) []*PathInfo {
 	return entries
 }
 
-func FilterDir(entries []*PathInfo, keepFileExt []string, keepFolders bool) []*PathInfo {
+func FilterDirEntries(keepFileExt []string, keepFolders bool, entries ...*PathInfo) []*PathInfo {
 	var filteredEntries []*PathInfo
 	for _, entry := range entries {
 		if (entry.IsDir() && keepFolders) ||
@@ -190,4 +190,36 @@ func FilterDir(entries []*PathInfo, keepFileExt []string, keepFolders bool) []*P
 		}
 	}
 	return filteredEntries
+}
+
+func Walk(root string, walkFunc func(pathInfo *PathInfo)) {
+	walkFunc(NewPathInfo(DirName(root), GetFileInfo(root)))
+	var wg sync.WaitGroup
+	wg.Add(1)
+	queue := make(chan string, 1024)
+	queue <- root
+	for i := 0; i < runtime.NumCPU()*4; i++ {
+		go func() {
+			for {
+				path, ok := <-queue
+				if !ok {
+					fmt.Println("stopping worker")
+					return
+				}
+				dir := ProcessErrorArg(os.Open(path)).(*os.File)
+				for _, entry := range ProcessErrorArg(dir.Readdir(-1)).([]os.FileInfo) {
+					pathInfo := NewPathInfo(path, entry)
+					if entry.IsDir() {
+						wg.Add(1)
+						queue <- pathInfo.Parent + string(os.PathSeparator) + pathInfo.Name()
+					}
+					walkFunc(pathInfo)
+				}
+				Close(dir)
+				wg.Done()
+			}
+		}()
+	}
+	wg.Wait()
+	close(queue)
 }
