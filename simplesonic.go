@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/syslog"
 	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -82,8 +83,8 @@ func getIndexes(exchange Exchange) {
 	exchange.Response.Indexes = &Indexes{LastModified: 0, IgnoredArticles: ""}
 	for i, musicFolder := range Config.MusicFolders {
 		if Contains(exchange.Request.URL.Query().Get("musicFolderId"), "", strconv.Itoa(i)) {
-			for _, entry := range FilterDir(ReadDirSorted(filepath.Clean(musicFolder.Path)+
-				string(os.PathSeparator)+"."), mediaFileExtensions, true) {
+			for _, entry := range FilterDirEntries(mediaFileExtensions, true,
+				ReadDirSorted(filepath.Clean(musicFolder.Path)+string(os.PathSeparator)+".")...) {
 				child := BuildChild(entry)
 				if child.IsDir {
 					exchange.Response.Indexes.AddArtist(&Artist{Id: child.Id, Name: child.Artist})
@@ -112,7 +113,7 @@ func getMusicDirectory(exchange Exchange) {
 			exchange.Response.Directory.Child = playlist.Entry
 			exchange.Response.Directory.Name = playlist.Name
 		} else {
-			for _, entry := range FilterDir(ReadDirSorted(baseDirectory), mediaFileExtensions, true) {
+			for _, entry := range FilterDirEntries(mediaFileExtensions, true, ReadDirSorted(baseDirectory)...) {
 				child := BuildChild(entry)
 				exchange.Response.Directory.Child = append(exchange.Response.Directory.Child, child)
 			}
@@ -139,7 +140,25 @@ func getArtistInfo(exchange Exchange) {
 }
 
 func getRandomSongs(exchange Exchange) {
+	var songs []*PathInfo
+	for i, musicFolder := range Config.MusicFolders {
+		if Contains(exchange.Request.URL.Query().Get("musicFolderId"), "", strconv.Itoa(i)) {
+			Walk(musicFolder.Path+string(os.PathSeparator)+".", func(pathInfo *PathInfo) {
+				if song := FilterDirEntries(musicFileExtensions, false, pathInfo); len(song) == 1 {
+					songs = append(songs, song[0])
+				}
+			})
+		}
+	}
+	size := 10
+	if sizeStr := exchange.Request.URL.Query().Get("size"); sizeStr != "" {
+		size = int(ParseNumber(sizeStr))
+	}
 	exchange.Response.RandomSongs = &Songs{}
+	for i := 0; i < size; i++ {
+		exchange.Response.RandomSongs.Song = append(exchange.Response.RandomSongs.Song,
+			BuildChild(songs[rand.Intn(len(songs))]))
+	}
 	exchange.SendResponse()
 }
 
@@ -147,7 +166,7 @@ func getPlaylists(exchange Exchange) {
 	exchange.Response.Playlists = &Playlists{}
 	userPlaylistFolder := filepath.Clean(Config.PlaylistFolder) +
 		MusicFolderSeparator + exchange.Request.URL.Query().Get("u")
-	for _, playlistFile := range FilterDir(ReadDirSorted(userPlaylistFolder), playlistFileExtensions, false) {
+	for _, playlistFile := range FilterDirEntries(playlistFileExtensions, false, ReadDirSorted(userPlaylistFolder)...) {
 		playlistWithSongs := ReadPlaylist(filepath.Join(userPlaylistFolder, playlistFile.Name())).GetPlaylistWithSongs()
 		playlistWithSongs.Owner = exchange.Request.URL.Query().Get("u")
 		playlistWithSongs.Public = false
@@ -252,7 +271,7 @@ func jukeboxControl(exchange Exchange) {
 func getInternetRadioStations(exchange Exchange) {
 	exchange.Response.InternetRadioStations = &InternetRadioStations{}
 	radioFolder := Config.PlaylistFolder + string(os.PathSeparator) + "_radio"
-	for _, radio := range FilterDir(ReadDirSorted(radioFolder), playlistFileExtensions, false) {
+	for _, radio := range FilterDirEntries(playlistFileExtensions, false, ReadDirSorted(radioFolder)...) {
 		playlist := ReadPlaylist(filepath.Join(radioFolder, radio.Name())).GetPlaylistWithSongs()
 		for _, entry := range playlist.Entry {
 			exchange.Response.InternetRadioStations.InternetRadioStation = append(
