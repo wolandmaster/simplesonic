@@ -233,6 +233,7 @@ type Child struct {
 	PlayCount             int64         `xml:"playCount,attr,omitempty" json:"playCount,omitempty"`
 	DiscNumber            int           `xml:"discNumber,attr,omitempty" json:"discNumber,omitempty"`
 	Created               *DateTime     `xml:"created,attr,omitempty" json:"created,omitempty"`
+	Changed               *DateTime     `xml:"-" json:"-"`
 	Starred               *DateTime     `xml:"starred,attr,omitempty" json:"starred,omitempty"`
 	AlbumId               string        `xml:"albumId,attr,omitempty" json:"albumId,omitempty"`
 	ArtistId              string        `xml:"artistId,attr,omitempty" json:"artistId,omitempty"`

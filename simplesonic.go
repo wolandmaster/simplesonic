@@ -85,7 +85,7 @@ func getIndexes(exchange Exchange) {
 	exchange.Response.Indexes = &Indexes{LastModified: 0, IgnoredArticles: ""}
 	for i, musicFolder := range Config.MusicFolders {
 		if Contains(exchange.Request.URL.Query().Get("musicFolderId"), "", strconv.Itoa(i)) {
-			for _, entry := range ReadDir(filepath.Clean(musicFolder.Path)+PathSeparator+".").
+			for _, entry := range *ReadDir(filepath.Clean(musicFolder.Path)+PathSeparator+".").
 				Filter(true, mediaFileExtensions...).Sort() {
 				child := BuildChild(entry)
 				if child.IsDir {
@@ -115,7 +115,7 @@ func getMusicDirectory(exchange Exchange) {
 			exchange.Response.Directory.Child = playlist.Entry
 			exchange.Response.Directory.Name = playlist.Name
 		} else {
-			for _, entry := range ReadDir(baseDirectory).Filter(true, mediaFileExtensions...).Sort() {
+			for _, entry := range *ReadDir(baseDirectory).Filter(true, mediaFileExtensions...).Sort() {
 				child := BuildChild(entry)
 				exchange.Response.Directory.Child = append(exchange.Response.Directory.Child, child)
 			}
@@ -142,12 +142,12 @@ func getArtistInfo(exchange Exchange) {
 }
 
 func getAlbumList(exchange Exchange) {
-	var albums PathInfoList
+	albums := new(PathInfoList)
 	for i, musicFolder := range Config.MusicFolders {
 		if Contains(exchange.Request.URL.Query().Get("musicFolderId"), "", strconv.Itoa(i)) {
-			for _, artist := range ReadDir(filepath.Clean(musicFolder.Path) + PathSeparator + ".").Filter(true) {
-				for _, album := range ReadDir(artist.Parent + PathSeparator + artist.Name()).Filter(true) {
-					albums = append(albums, album)
+			for _, artist := range *ReadDir(filepath.Clean(musicFolder.Path) + PathSeparator + ".").Filter(true) {
+				for _, album := range *ReadDir(artist.Parent + PathSeparator + artist.Name()).Filter(true) {
+					*albums = append(*albums, album)
 				}
 			}
 		}
@@ -161,12 +161,10 @@ func getAlbumList(exchange Exchange) {
 		fromYear := exchange.QueryGetInt("fromYear", 0)
 		toYear := exchange.QueryGetInt("toYear", 9999)
 		if fromYear < toYear {
-			albums = albums.
-				FilterByChild(func(child *Child) bool { return child.Year >= fromYear && child.Year <= toYear }).
+			albums.FilterByChild(func(child *Child) bool { return child.Year >= fromYear && child.Year <= toYear }).
 				SortByChild(func(i, j *Child) bool { return i.Year < j.Year })
 		} else {
-			albums = albums.
-				FilterByChild(func(child *Child) bool { return child.Year >= toYear && child.Year <= fromYear }).
+			albums.FilterByChild(func(child *Child) bool { return child.Year >= toYear && child.Year <= fromYear }).
 				SortByChild(func(i, j *Child) bool { return i.Year > j.Year })
 		}
 	case "newest":
@@ -180,8 +178,8 @@ func getAlbumList(exchange Exchange) {
 	size := exchange.QueryGetInt("size", 10)
 	offset := exchange.QueryGetInt("offset", 0)
 	exchange.Response.AlbumList = &AlbumList{}
-	for i, offsetEnd := offset, Min(offset+size, len(albums)-offset); i < offsetEnd; i++ {
-		exchange.Response.AlbumList.Album = append(exchange.Response.AlbumList.Album, BuildChild(albums[i]))
+	for i, offsetEnd := offset, Min(offset+size, len(*albums)-offset); i < offsetEnd; i++ {
+		exchange.Response.AlbumList.Album = append(exchange.Response.AlbumList.Album, BuildChild((*albums)[i]))
 	}
 	exchange.SendResponse()
 }
@@ -209,7 +207,7 @@ func getPlaylists(exchange Exchange) {
 	exchange.Response.Playlists = &Playlists{}
 	userPlaylistFolder := filepath.Clean(Config.PlaylistFolder) +
 		MusicFolderSeparator + exchange.Request.URL.Query().Get("u")
-	for _, playlistFile := range ReadDir(userPlaylistFolder).Filter(false, playlistFileExtensions...).Sort() {
+	for _, playlistFile := range *ReadDir(userPlaylistFolder).Filter(false, playlistFileExtensions...).Sort() {
 		playlistWithSongs := ReadPlaylist(filepath.Join(userPlaylistFolder, playlistFile.Name())).GetPlaylistWithSongs()
 		playlistWithSongs.Owner = exchange.Request.URL.Query().Get("u")
 		playlistWithSongs.Public = false
@@ -314,7 +312,7 @@ func jukeboxControl(exchange Exchange) {
 func getInternetRadioStations(exchange Exchange) {
 	exchange.Response.InternetRadioStations = &InternetRadioStations{}
 	radioFolder := Config.PlaylistFolder + PathSeparator + "_radio"
-	for _, radio := range ReadDir(radioFolder).Filter(false, playlistFileExtensions...).Sort() {
+	for _, radio := range *ReadDir(radioFolder).Filter(false, playlistFileExtensions...).Sort() {
 		playlist := ReadPlaylist(filepath.Join(radioFolder, radio.Name())).GetPlaylistWithSongs()
 		for _, entry := range playlist.Entry {
 			exchange.Response.InternetRadioStations.InternetRadioStation = append(

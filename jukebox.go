@@ -102,6 +102,7 @@ func (mpd *MPD) Stop() {
 
 func (mpd *MPD) Skip(trackPos, seconds int) {
 	mpd.sendCommand(fmt.Sprintf("seek %d %d", trackPos, seconds))
+	mpd.Stop()
 }
 
 func (mpd *MPD) Clear() {

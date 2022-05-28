@@ -169,72 +169,74 @@ func NewPathInfo(parent string, entry os.FileInfo) *PathInfo {
 
 type PathInfoList []*PathInfo
 
-func ReadDir(dirname string) PathInfoList {
-	var entries PathInfoList
+func ReadDir(dirname string) *PathInfoList {
+	entries := new(PathInfoList)
 	if !IsExists(dirname) {
 		return entries
 	}
 	dir := ProcessErrorArg(os.Open(dirname)).(*os.File)
 	defer Close(dir)
 	for _, entry := range ProcessErrorArg(dir.Readdir(-1)).([]os.FileInfo) {
-		entries = append(entries, NewPathInfo(dirname, entry))
+		*entries = append(*entries, NewPathInfo(dirname, entry))
 	}
 	return entries
 }
 
-func (pathInfoList PathInfoList) Sort() PathInfoList {
-	sort.Slice(pathInfoList, func(i, j int) bool {
-		if pathInfoList[i].IsDir() && !pathInfoList[j].IsDir() {
+func (pathInfoList *PathInfoList) Sort() *PathInfoList {
+	sort.Slice(*pathInfoList, func(i, j int) bool {
+		if (*pathInfoList)[i].IsDir() && !(*pathInfoList)[j].IsDir() {
 			return true
-		} else if !pathInfoList[i].IsDir() && pathInfoList[j].IsDir() {
+		} else if !(*pathInfoList)[i].IsDir() && (*pathInfoList)[j].IsDir() {
 			return false
 		} else {
-			return pathInfoList[i].Name() < pathInfoList[j].Name()
+			return (*pathInfoList)[i].Name() < (*pathInfoList)[j].Name()
 		}
 	})
 	return pathInfoList
 }
 
-func (pathInfoList PathInfoList) SortByChild(less func(*Child, *Child) bool) PathInfoList {
-	cache := make(map[*PathInfo]*Child, len(pathInfoList))
-	sort.Slice(pathInfoList, func(i, j int) bool {
-		if _, ok := cache[pathInfoList[i]]; !ok {
-			cache[pathInfoList[i]] = BuildChild(pathInfoList[i])
+func (pathInfoList *PathInfoList) SortByChild(less func(*Child, *Child) bool) *PathInfoList {
+	cache := make(map[*PathInfo]*Child, len(*pathInfoList))
+	sort.Slice(*pathInfoList, func(i, j int) bool {
+		if _, ok := cache[(*pathInfoList)[i]]; !ok {
+			cache[(*pathInfoList)[i]] = BuildChild((*pathInfoList)[i])
 		}
-		if _, ok := cache[pathInfoList[j]]; !ok {
-			cache[pathInfoList[j]] = BuildChild(pathInfoList[j])
+		if _, ok := cache[(*pathInfoList)[j]]; !ok {
+			cache[(*pathInfoList)[j]] = BuildChild((*pathInfoList)[j])
 		}
-		return less(cache[pathInfoList[i]], cache[pathInfoList[j]])
+		return less(cache[(*pathInfoList)[i]], cache[(*pathInfoList)[j]])
 	})
 	return pathInfoList
 }
 
-func (pathInfoList PathInfoList) Filter(keepFolders bool, keepFileExt ...string) PathInfoList {
+func (pathInfoList *PathInfoList) Filter(keepFolders bool, keepFileExt ...string) *PathInfoList {
 	n := 0
-	for _, entry := range pathInfoList {
+	for _, entry := range *pathInfoList {
 		if (entry.IsDir() && keepFolders) || (!entry.IsDir() && Contains(filepath.Ext(entry.Name()), keepFileExt...)) {
-			pathInfoList[n] = entry
+			(*pathInfoList)[n] = entry
 			n++
 		}
 	}
-	return pathInfoList[:n]
+	*pathInfoList = (*pathInfoList)[:n]
+	return pathInfoList
 }
 
-func (pathInfoList PathInfoList) FilterByChild(filter func(*Child) bool) PathInfoList {
+func (pathInfoList *PathInfoList) FilterByChild(filter func(*Child) bool) *PathInfoList {
 	n := 0
-	for _, entry := range pathInfoList {
+	for _, entry := range *pathInfoList {
 		if filter(BuildChild(entry)) {
-			pathInfoList[n] = entry
+			(*pathInfoList)[n] = entry
 			n++
 		}
 	}
-	return pathInfoList[:n]
+	*pathInfoList = (*pathInfoList)[:n]
+	return pathInfoList
 }
 
-func (pathInfoList PathInfoList) Shuffle() PathInfoList {
+func (pathInfoList *PathInfoList) Shuffle() *PathInfoList {
 	rand.Seed(time.Now().UnixNano())
-	rand.Shuffle(len(pathInfoList), func(i, j int) {
-		pathInfoList[i], pathInfoList[j] = pathInfoList[j], pathInfoList[i]
+	rand.Shuffle(len(*pathInfoList), func(i, j int) {
+		(*pathInfoList)[i], (*pathInfoList)[j] = (*pathInfoList)[j], (*pathInfoList)[i]
 	})
 	return pathInfoList
 }
@@ -251,7 +253,7 @@ func Walk(root string, walkFunc func(*PathInfo)) {
 				if dirname, ok := <-queue; !ok {
 					return
 				} else {
-					for _, entry := range ReadDir(dirname) {
+					for _, entry := range *ReadDir(dirname) {
 						if entry.IsDir() {
 							waitGroup.Add(1)
 							queue <- entry.Parent + PathSeparator + entry.Name()
@@ -267,13 +269,27 @@ func Walk(root string, walkFunc func(*PathInfo)) {
 	close(queue)
 }
 
+var (
+	childCache      = make(map[string]*Child)
+	childCacheMutex = sync.RWMutex{}
+)
+
 func BuildChild(entry *PathInfo) *Child {
 	childPath := entry.Parent + PathSeparator + entry.Name()
+	if child, ok := func() (child *Child, ok bool) {
+		childCacheMutex.RLock()
+		defer childCacheMutex.RUnlock()
+		child, ok = childCache[childPath]
+		return
+	}(); ok && child.Changed.Equal(ChangeTime(childPath).Time) {
+		return child
+	}
 	child := Child{
 		Id:      EncodeId(childPath),
 		IsDir:   entry.IsDir(),
 		Title:   normalizeName(entry.Name()),
 		Created: CreateTime(childPath),
+		Changed: ChangeTime(childPath),
 	}
 	childPathParts := getChildPathParts(childPath)
 	if len(childPathParts) > 0 && childPathParts[0].IsDir() {
@@ -309,6 +325,9 @@ func BuildChild(entry *PathInfo) *Child {
 	if IsExists(coverArtFile) {
 		child.CoverArt = EncodeId(coverArtFile)
 	}
+	childCacheMutex.Lock()
+	defer childCacheMutex.Unlock()
+	childCache[childPath] = &child
 	return &child
 }
 
