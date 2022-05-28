@@ -88,7 +88,7 @@ func (decoder *M3UDecoder) Decode(playlist *ExtendedPlaylistWithSongs) error {
 				if path, err := IsAllowedPath(entry); err == nil && IsExists(path) {
 					playlist.Images[imageType] = path
 				} else if path, err := IsAllowedPath(DirName(decoder.m3uFilename) +
-					string(os.PathSeparator) + entry); err == nil && IsExists(path) {
+					PathSeparator + entry); err == nil && IsExists(path) {
 					playlist.Images[imageType] = path
 				}
 			}
@@ -128,12 +128,8 @@ func (decoder *M3UDecoder) Decode(playlist *ExtendedPlaylistWithSongs) error {
 	if playlist.Name == "" && playlist.SongCount > 0 {
 		playlist.Name = playlist.Entry[0].Album
 	}
-	if createTime := FileCreateTime(decoder.m3uFilename); createTime != nil {
-		playlist.Created = createTime
-	} else {
-		playlist.Created = &DateTime{}
-	}
-	playlist.Changed = FileChangeTime(decoder.m3uFilename)
+	playlist.Created = CreateTime(decoder.m3uFilename)
+	playlist.Changed = ChangeTime(decoder.m3uFilename)
 	playlist.CoverArt = "pl-" + playlist.Id
 	return nil
 }

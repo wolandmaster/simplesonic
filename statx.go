@@ -49,10 +49,10 @@ var (
 	}
 )
 
-func Statx(filename string) (*Statx_t, error) {
+func Statx(path string) (*Statx_t, error) {
 	if sysStatx, ok := sysStatxArch[runtime.GOARCH]; ok && runtime.GOOS == "linux" {
 		var statx Statx_t
-		filenamePtr := &append([]byte(filename), 0x0)[0]
+		filenamePtr := &append([]byte(path), 0x0)[0]
 		if _, _, errno := syscall.Syscall6(uintptr(sysStatx), uintptr(atFdCwd), uintptr(unsafe.Pointer(filenamePtr)),
 			uintptr(atSymlinkNofollow), uintptr(statxAll), uintptr(unsafe.Pointer(&statx)), 0); errno != 0 {
 			return nil, fmt.Errorf("statx errno %d", errno)

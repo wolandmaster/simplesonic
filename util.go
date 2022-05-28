@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"io/ioutil"
 	"log"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -85,6 +85,13 @@ func ParseNumber(str string) float64 {
 	}
 }
 
+func Min(x, y int) int {
+	if x > y {
+		return y
+	}
+	return x
+}
+
 func IsExists(path string) bool {
 	exists := false
 	if _, err := os.Stat(path); err == nil {
@@ -124,15 +131,15 @@ func DirName(path string) string {
 	return vol + dir
 }
 
-func FileCreateTime(filename string) *DateTime {
-	if statx := ProcessErrorArg(Statx(filename)).(*Statx_t); statx != nil && statx.Btime.Sec != 0 {
+func CreateTime(path string) *DateTime {
+	if statx := ProcessErrorArg(Statx(path)).(*Statx_t); statx != nil && statx.Btime.Sec != 0 {
 		return &DateTime{Time: time.Unix(statx.Btime.Sec, int64(statx.Btime.Nsec))}
 	}
-	return nil
+	return ChangeTime(path)
 }
 
-func FileChangeTime(filename string) *DateTime {
-	return &DateTime{Time: GetFileInfo(filename).ModTime()}
+func ChangeTime(path string) *DateTime {
+	return &DateTime{Time: GetFileInfo(path).ModTime()}
 }
 
 type PathInfo struct {
@@ -152,74 +159,171 @@ func NewPathInfo(parent string, entry os.FileInfo) *PathInfo {
 			symlinkDest = filepath.Join(parent, symlinkDest)
 		}
 		musicFolderParts := strings.SplitN(parent, MusicFolderSeparator, 2)
-		symlinkDest = strings.Replace(symlinkDest, musicFolderParts[0]+string(os.PathSeparator),
-			musicFolderParts[0]+MusicFolderSeparator, 1)
+		symlinkDest = strings.Replace(symlinkDest,
+			musicFolderParts[0]+PathSeparator, musicFolderParts[0]+MusicFolderSeparator, 1)
 		pathInfo.Parent = DirName(symlinkDest)
 		pathInfo.FileInfo = GetFileInfo(symlinkDest)
 	}
 	return pathInfo
 }
 
-func ReadDirSorted(dirname string) []*PathInfo {
-	var entries []*PathInfo
+type PathInfoList []*PathInfo
+
+func ReadDir(dirname string) PathInfoList {
+	var entries PathInfoList
 	if !IsExists(dirname) {
 		return entries
 	}
-	for _, fileInfo := range ProcessErrorArg(ioutil.ReadDir(dirname)).([]os.FileInfo) {
-		entries = append(entries, NewPathInfo(dirname, fileInfo))
+	dir := ProcessErrorArg(os.Open(dirname)).(*os.File)
+	defer Close(dir)
+	for _, entry := range ProcessErrorArg(dir.Readdir(-1)).([]os.FileInfo) {
+		entries = append(entries, NewPathInfo(dirname, entry))
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].IsDir() && !entries[j].IsDir() {
-			return true
-		} else if !entries[i].IsDir() && entries[j].IsDir() {
-			return false
-		} else {
-			return entries[i].Name() < entries[j].Name()
-		}
-	})
 	return entries
 }
 
-func FilterDirEntries(keepFileExt []string, keepFolders bool, entries ...*PathInfo) []*PathInfo {
-	var filteredEntries []*PathInfo
-	for _, entry := range entries {
-		if (entry.IsDir() && keepFolders) ||
-			(!entry.IsDir() && len(keepFileExt) == 0) ||
-			(!entry.IsDir() && len(keepFileExt) > 0 && Contains(filepath.Ext(entry.Name()), keepFileExt...)) {
-			filteredEntries = append(filteredEntries, entry)
+func (pathInfoList PathInfoList) Sort() PathInfoList {
+	sort.Slice(pathInfoList, func(i, j int) bool {
+		if pathInfoList[i].IsDir() && !pathInfoList[j].IsDir() {
+			return true
+		} else if !pathInfoList[i].IsDir() && pathInfoList[j].IsDir() {
+			return false
+		} else {
+			return pathInfoList[i].Name() < pathInfoList[j].Name()
 		}
-	}
-	return filteredEntries
+	})
+	return pathInfoList
 }
 
-func Walk(root string, walkFunc func(pathInfo *PathInfo)) {
+func (pathInfoList PathInfoList) SortByChild(less func(*Child, *Child) bool) PathInfoList {
+	cache := make(map[*PathInfo]*Child, len(pathInfoList))
+	sort.Slice(pathInfoList, func(i, j int) bool {
+		if _, ok := cache[pathInfoList[i]]; !ok {
+			cache[pathInfoList[i]] = BuildChild(pathInfoList[i])
+		}
+		if _, ok := cache[pathInfoList[j]]; !ok {
+			cache[pathInfoList[j]] = BuildChild(pathInfoList[j])
+		}
+		return less(cache[pathInfoList[i]], cache[pathInfoList[j]])
+	})
+	return pathInfoList
+}
+
+func (pathInfoList PathInfoList) Filter(keepFolders bool, keepFileExt ...string) PathInfoList {
+	n := 0
+	for _, entry := range pathInfoList {
+		if (entry.IsDir() && keepFolders) || (!entry.IsDir() && Contains(filepath.Ext(entry.Name()), keepFileExt...)) {
+			pathInfoList[n] = entry
+			n++
+		}
+	}
+	return pathInfoList[:n]
+}
+
+func (pathInfoList PathInfoList) FilterByChild(filter func(*Child) bool) PathInfoList {
+	n := 0
+	for _, entry := range pathInfoList {
+		if filter(BuildChild(entry)) {
+			pathInfoList[n] = entry
+			n++
+		}
+	}
+	return pathInfoList[:n]
+}
+
+func (pathInfoList PathInfoList) Shuffle() PathInfoList {
+	rand.Seed(time.Now().UnixNano())
+	rand.Shuffle(len(pathInfoList), func(i, j int) {
+		pathInfoList[i], pathInfoList[j] = pathInfoList[j], pathInfoList[i]
+	})
+	return pathInfoList
+}
+
+func Walk(root string, walkFunc func(*PathInfo)) {
 	walkFunc(NewPathInfo(DirName(root), GetFileInfo(root)))
-	var wg sync.WaitGroup
-	wg.Add(1)
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(1)
 	queue := make(chan string, 1024)
 	queue <- root
 	for i := 0; i < runtime.NumCPU()*4; i++ {
 		go func() {
 			for {
-				path, ok := <-queue
-				if !ok {
-					fmt.Println("stopping worker")
+				if dirname, ok := <-queue; !ok {
 					return
-				}
-				dir := ProcessErrorArg(os.Open(path)).(*os.File)
-				for _, entry := range ProcessErrorArg(dir.Readdir(-1)).([]os.FileInfo) {
-					pathInfo := NewPathInfo(path, entry)
-					if entry.IsDir() {
-						wg.Add(1)
-						queue <- pathInfo.Parent + string(os.PathSeparator) + pathInfo.Name()
+				} else {
+					for _, entry := range ReadDir(dirname) {
+						if entry.IsDir() {
+							waitGroup.Add(1)
+							queue <- entry.Parent + PathSeparator + entry.Name()
+						}
+						walkFunc(entry)
 					}
-					walkFunc(pathInfo)
+					waitGroup.Done()
 				}
-				Close(dir)
-				wg.Done()
 			}
 		}()
 	}
-	wg.Wait()
+	waitGroup.Wait()
 	close(queue)
+}
+
+func BuildChild(entry *PathInfo) *Child {
+	childPath := entry.Parent + PathSeparator + entry.Name()
+	child := Child{
+		Id:      EncodeId(childPath),
+		IsDir:   entry.IsDir(),
+		Title:   normalizeName(entry.Name()),
+		Created: CreateTime(childPath),
+	}
+	childPathParts := getChildPathParts(childPath)
+	if len(childPathParts) > 0 && childPathParts[0].IsDir() {
+		child.Artist = normalizeName(childPathParts[0].Name())
+		if len(childPathParts) == 1 {
+			child.Title = child.Artist
+		}
+	}
+	if len(childPathParts) > 1 {
+		child.Parent = EncodeId(entry.Parent)
+		if childPathParts[1].IsDir() {
+			child.Album = normalizeName(childPathParts[1].Name())
+			if match := leadingYearRegexp.FindStringSubmatch(child.Album); match != nil {
+				child.Album = match[2]
+				child.Year = int(ParseNumber(match[1]))
+			}
+			if len(childPathParts) == 2 {
+				child.Title = child.Album
+			}
+		}
+	}
+	coverArtFile := childPath + PathSeparator + "folder.jpg"
+	if !child.IsDir {
+		coverArtFile = entry.Parent + PathSeparator + "folder.jpg"
+		child.Suffix = strings.Replace(filepath.Ext(entry.Name()), ".", "", 1)
+		child.Size = entry.Size()
+		child.Title = child.Title[0 : len(child.Title)-len(filepath.Ext(child.Title))]
+		if match := leadingTrackRegexp.FindStringSubmatch(child.Title); match != nil {
+			child.Title = match[2]
+			child.Track = int(ParseNumber(match[1]))
+		}
+	}
+	if IsExists(coverArtFile) {
+		child.CoverArt = EncodeId(coverArtFile)
+	}
+	return &child
+}
+
+func getChildPathParts(path string) []os.FileInfo {
+	musicFolderParts := strings.SplitN(path, MusicFolderSeparator, 2)
+	musicDirectoryParts := strings.Split(musicFolderParts[1], PathSeparator)
+	absolutePath := musicFolderParts[0]
+	var childPathParts []os.FileInfo
+	for _, musicDirectoryPart := range musicDirectoryParts {
+		absolutePath = absolutePath + PathSeparator + musicDirectoryPart
+		childPathParts = append(childPathParts, GetFileInfo(absolutePath))
+	}
+	return childPathParts
+}
+
+func normalizeName(str string) string {
+	return strings.Replace(strings.TrimSpace(str), "_", " ", -1)
 }

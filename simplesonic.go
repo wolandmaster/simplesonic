@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	MusicFolderSeparator = string(os.PathSeparator) + "." + string(os.PathSeparator)
+	PathSeparator        = string(os.PathSeparator)
+	MusicFolderSeparator = PathSeparator + "." + PathSeparator
 )
 
 var (
@@ -36,6 +37,7 @@ func main() {
 	RegisterHandler("/rest/getIndexes.view", getIndexes)
 	RegisterHandler("/rest/getMusicDirectory.view", getMusicDirectory)
 	RegisterHandler("/rest/getArtistInfo.view", getArtistInfo)
+	RegisterHandler("/rest/getAlbumList.view", getAlbumList)
 	RegisterHandler("/rest/getRandomSongs.view", getRandomSongs)
 	RegisterHandler("/rest/getPlaylists.view", getPlaylists)
 	RegisterHandler("/rest/getPlaylist.view", getPlaylist)
@@ -83,8 +85,8 @@ func getIndexes(exchange Exchange) {
 	exchange.Response.Indexes = &Indexes{LastModified: 0, IgnoredArticles: ""}
 	for i, musicFolder := range Config.MusicFolders {
 		if Contains(exchange.Request.URL.Query().Get("musicFolderId"), "", strconv.Itoa(i)) {
-			for _, entry := range FilterDirEntries(mediaFileExtensions, true,
-				ReadDirSorted(filepath.Clean(musicFolder.Path)+string(os.PathSeparator)+".")...) {
+			for _, entry := range ReadDir(filepath.Clean(musicFolder.Path)+PathSeparator+".").
+				Filter(true, mediaFileExtensions...).Sort() {
 				child := BuildChild(entry)
 				if child.IsDir {
 					exchange.Response.Indexes.AddArtist(&Artist{Id: child.Id, Name: child.Artist})
@@ -108,12 +110,12 @@ func getMusicDirectory(exchange Exchange) {
 			Parent: musicDirectory.Parent,
 			Name:   musicDirectory.Title,
 		}
-		if playlistFile := baseDirectory + string(os.PathSeparator) + "album.m3u8"; IsExists(playlistFile) {
+		if playlistFile := baseDirectory + PathSeparator + "album.m3u8"; IsExists(playlistFile) {
 			playlist := ReadPlaylist(playlistFile).GetPlaylistWithSongs()
 			exchange.Response.Directory.Child = playlist.Entry
 			exchange.Response.Directory.Name = playlist.Name
 		} else {
-			for _, entry := range FilterDirEntries(mediaFileExtensions, true, ReadDirSorted(baseDirectory)...) {
+			for _, entry := range ReadDir(baseDirectory).Filter(true, mediaFileExtensions...).Sort() {
 				child := BuildChild(entry)
 				exchange.Response.Directory.Child = append(exchange.Response.Directory.Child, child)
 			}
@@ -139,23 +141,64 @@ func getArtistInfo(exchange Exchange) {
 	exchange.SendResponse()
 }
 
-func getRandomSongs(exchange Exchange) {
-	var songs []*PathInfo
+func getAlbumList(exchange Exchange) {
+	var albums PathInfoList
 	for i, musicFolder := range Config.MusicFolders {
 		if Contains(exchange.Request.URL.Query().Get("musicFolderId"), "", strconv.Itoa(i)) {
-			Walk(musicFolder.Path+string(os.PathSeparator)+".", func(pathInfo *PathInfo) {
-				if song := FilterDirEntries(musicFileExtensions, false, pathInfo); len(song) == 1 {
-					songs = append(songs, song[0])
+			for _, artist := range ReadDir(filepath.Clean(musicFolder.Path) + PathSeparator + ".").Filter(true) {
+				for _, album := range ReadDir(artist.Parent + PathSeparator + artist.Name()).Filter(true) {
+					albums = append(albums, album)
+				}
+			}
+		}
+	}
+	switch exchange.Request.URL.Query().Get("type") {
+	case "alphabeticalByName":
+		albums.SortByChild(func(i, j *Child) bool { return i.Album < j.Album })
+	case "alphabeticalByArtist":
+		albums.SortByChild(func(i, j *Child) bool { return i.Artist < j.Artist })
+	case "byYear":
+		fromYear := exchange.QueryGetInt("fromYear", 0)
+		toYear := exchange.QueryGetInt("toYear", 9999)
+		if fromYear < toYear {
+			albums = albums.
+				FilterByChild(func(child *Child) bool { return child.Year >= fromYear && child.Year <= toYear }).
+				SortByChild(func(i, j *Child) bool { return i.Year < j.Year })
+		} else {
+			albums = albums.
+				FilterByChild(func(child *Child) bool { return child.Year >= toYear && child.Year <= fromYear }).
+				SortByChild(func(i, j *Child) bool { return i.Year > j.Year })
+		}
+	case "newest":
+		albums.SortByChild(func(i, j *Child) bool { return i.Created.After(j.Created.Time) })
+	case "random":
+		albums.Shuffle()
+	case "highest" /* Top rated */, "starred", "recent" /* Recently played */, "frequent" /* Most played */, "byGenre":
+		exchange.SendError(30, "Not yet implemented!")
+		return
+	}
+	size := exchange.QueryGetInt("size", 10)
+	offset := exchange.QueryGetInt("offset", 0)
+	exchange.Response.AlbumList = &AlbumList{}
+	for i, offsetEnd := offset, Min(offset+size, len(albums)-offset); i < offsetEnd; i++ {
+		exchange.Response.AlbumList.Album = append(exchange.Response.AlbumList.Album, BuildChild(albums[i]))
+	}
+	exchange.SendResponse()
+}
+
+func getRandomSongs(exchange Exchange) {
+	var songs PathInfoList
+	for i, musicFolder := range Config.MusicFolders {
+		if Contains(exchange.Request.URL.Query().Get("musicFolderId"), "", strconv.Itoa(i)) {
+			Walk(filepath.Clean(musicFolder.Path)+PathSeparator+".", func(entry *PathInfo) {
+				if !entry.IsDir() && Contains(filepath.Ext(entry.Name()), musicFileExtensions...) {
+					songs = append(songs, entry)
 				}
 			})
 		}
 	}
-	size := 10
-	if sizeStr := exchange.Request.URL.Query().Get("size"); sizeStr != "" {
-		size = int(ParseNumber(sizeStr))
-	}
 	exchange.Response.RandomSongs = &Songs{}
-	for i := 0; i < size; i++ {
+	for i, size := 0, exchange.QueryGetInt("size", 10); i < size; i++ {
 		exchange.Response.RandomSongs.Song = append(exchange.Response.RandomSongs.Song,
 			BuildChild(songs[rand.Intn(len(songs))]))
 	}
@@ -166,7 +209,7 @@ func getPlaylists(exchange Exchange) {
 	exchange.Response.Playlists = &Playlists{}
 	userPlaylistFolder := filepath.Clean(Config.PlaylistFolder) +
 		MusicFolderSeparator + exchange.Request.URL.Query().Get("u")
-	for _, playlistFile := range FilterDirEntries(playlistFileExtensions, false, ReadDirSorted(userPlaylistFolder)...) {
+	for _, playlistFile := range ReadDir(userPlaylistFolder).Filter(false, playlistFileExtensions...).Sort() {
 		playlistWithSongs := ReadPlaylist(filepath.Join(userPlaylistFolder, playlistFile.Name())).GetPlaylistWithSongs()
 		playlistWithSongs.Owner = exchange.Request.URL.Query().Get("u")
 		playlistWithSongs.Public = false
@@ -270,8 +313,8 @@ func jukeboxControl(exchange Exchange) {
 
 func getInternetRadioStations(exchange Exchange) {
 	exchange.Response.InternetRadioStations = &InternetRadioStations{}
-	radioFolder := Config.PlaylistFolder + string(os.PathSeparator) + "_radio"
-	for _, radio := range FilterDirEntries(playlistFileExtensions, false, ReadDirSorted(radioFolder)...) {
+	radioFolder := Config.PlaylistFolder + PathSeparator + "_radio"
+	for _, radio := range ReadDir(radioFolder).Filter(false, playlistFileExtensions...).Sort() {
 		playlist := ReadPlaylist(filepath.Join(radioFolder, radio.Name())).GetPlaylistWithSongs()
 		for _, entry := range playlist.Entry {
 			exchange.Response.InternetRadioStations.InternetRadioStation = append(
@@ -314,64 +357,4 @@ func unhandled(writer http.ResponseWriter, request *http.Request) {
 			Close(conn)
 		}
 	}
-}
-
-func BuildChild(entry *PathInfo) *Child {
-	childPath := entry.Parent + string(os.PathSeparator) + entry.Name()
-	child := Child{
-		Id:    EncodeId(childPath),
-		IsDir: entry.IsDir(),
-		Title: normalizeName(entry.Name()),
-	}
-	childPathParts := getChildPathParts(childPath)
-	if len(childPathParts) > 0 && childPathParts[0].IsDir() {
-		child.Artist = normalizeName(childPathParts[0].Name())
-		if len(childPathParts) == 1 {
-			child.Title = child.Artist
-		}
-	}
-	if len(childPathParts) > 1 {
-		child.Parent = EncodeId(entry.Parent)
-		if childPathParts[1].IsDir() {
-			child.Album = normalizeName(childPathParts[1].Name())
-			if match := leadingYearRegexp.FindStringSubmatch(child.Album); match != nil {
-				child.Album = match[2]
-				child.Year = int(ParseNumber(match[1]))
-			}
-			if len(childPathParts) == 2 {
-				child.Title = child.Album
-			}
-		}
-	}
-	coverArtFile := childPath + string(os.PathSeparator) + "folder.jpg"
-	if !child.IsDir {
-		coverArtFile = entry.Parent + string(os.PathSeparator) + "folder.jpg"
-		child.Suffix = strings.Replace(filepath.Ext(entry.Name()), ".", "", 1)
-		child.Size = entry.Size()
-		child.Title = child.Title[0 : len(child.Title)-len(filepath.Ext(child.Title))]
-		if match := leadingTrackRegexp.FindStringSubmatch(child.Title); match != nil {
-			child.Title = match[2]
-			child.Track = int(ParseNumber(match[1]))
-		}
-	}
-	if IsExists(coverArtFile) {
-		child.CoverArt = EncodeId(coverArtFile)
-	}
-	return &child
-}
-
-func getChildPathParts(path string) []os.FileInfo {
-	musicFolderParts := strings.SplitN(path, MusicFolderSeparator, 2)
-	musicDirectoryParts := strings.Split(musicFolderParts[1], string(os.PathSeparator))
-	absolutePath := musicFolderParts[0]
-	var childPathParts []os.FileInfo
-	for _, musicDirectoryPart := range musicDirectoryParts {
-		absolutePath = absolutePath + string(os.PathSeparator) + musicDirectoryPart
-		childPathParts = append(childPathParts, GetFileInfo(absolutePath))
-	}
-	return childPathParts
-}
-
-func normalizeName(str string) string {
-	return strings.Replace(strings.TrimSpace(str), "_", " ", -1)
 }

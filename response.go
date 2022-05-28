@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"time"
 )
 
 const coverJpegQuality = 90
@@ -24,6 +25,7 @@ const coverJpegQuality = 90
 type Exchange struct {
 	Request        *http.Request
 	Response       *Response
+	requestTime    time.Time
 	responseWriter http.ResponseWriter
 }
 
@@ -57,8 +59,8 @@ func init() {
 
 func RegisterHandler(pattern string, handler func(Exchange)) {
 	http.HandleFunc(pattern, func(writer http.ResponseWriter, request *http.Request) {
+		exchange := Exchange{Request: request, Response: NewResponse(), requestTime: time.Now(), responseWriter: writer}
 		log.Printf("Request: %s\n", request.URL)
-		exchange := Exchange{Request: request, Response: NewResponse(), responseWriter: writer}
 		defer func() {
 			if p := recover(); p != nil {
 				fmt.Printf("%v: %s\n", p, string(debug.Stack()))
@@ -73,6 +75,14 @@ func RegisterHandler(pattern string, handler func(Exchange)) {
 	})
 }
 
+func (exchange Exchange) QueryGetInt(key string, defaultValue int) int {
+	value := defaultValue
+	if valueStr := exchange.Request.URL.Query().Get(key); valueStr != "" {
+		value = int(ParseNumber(valueStr))
+	}
+	return value
+}
+
 func (exchange Exchange) SendResponse() {
 	var response []byte
 	if exchange.Request.URL.Query().Get("f") == "json" {
@@ -83,14 +93,14 @@ func (exchange Exchange) SendResponse() {
 		response = ProcessErrorArg(xml.Marshal(exchange.Response)).([]byte)
 	}
 	n := ProcessErrorArg(exchange.responseWriter.Write(response)).(int)
-	log.Printf("Response (%d bytes): %s\n\n", n, response)
+	log.Printf("Response (%d bytes, %v): %s\n\n", n, time.Since(exchange.requestTime), response)
 }
 
 func (exchange Exchange) SendFile(filename string) {
 	file := ProcessErrorArg(os.Open(filename)).(*os.File)
 	exchange.responseWriter.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(filename)))
 	n := ProcessErrorArg(io.Copy(exchange.responseWriter, file)).(int64)
-	log.Printf("Response (%d bytes): file: %s", n, filename)
+	log.Printf("Response (%d bytes, %v): file: %s", n, time.Since(exchange.requestTime), filename)
 }
 
 func (exchange Exchange) SendJpeg(img image.Image) {
@@ -98,7 +108,8 @@ func (exchange Exchange) SendJpeg(img image.Image) {
 	ProcessError(jpeg.Encode(&responseJpeg, img, &jpeg.Options{Quality: coverJpegQuality}))
 	exchange.responseWriter.Header().Set("Content-Type", mime.TypeByExtension(".jpg"))
 	n := ProcessErrorArg(exchange.responseWriter.Write(responseJpeg.Bytes())).(int)
-	log.Printf("Response (%d bytes): jpeg: %d x %d px", n, img.Bounds().Size().X, img.Bounds().Size().Y)
+	log.Printf("Response (%d bytes, %v): jpeg: %d x %d px",
+		n, time.Since(exchange.requestTime), img.Bounds().Size().X, img.Bounds().Size().Y)
 }
 
 func (exchange Exchange) SendPng(img image.Image) {
@@ -106,7 +117,8 @@ func (exchange Exchange) SendPng(img image.Image) {
 	ProcessError(png.Encode(&responsePng, img))
 	exchange.responseWriter.Header().Set("Content-Type", mime.TypeByExtension(".png"))
 	n := ProcessErrorArg(exchange.responseWriter.Write(responsePng.Bytes())).(int)
-	log.Printf("Response (%d bytes): png: %d x %d px", n, img.Bounds().Size().X, img.Bounds().Size().Y)
+	log.Printf("Response (%d bytes, %v): png: %d x %d px",
+		n, time.Since(exchange.requestTime), img.Bounds().Size().X, img.Bounds().Size().Y)
 }
 
 func (exchange Exchange) SendError(code int, message string) {
