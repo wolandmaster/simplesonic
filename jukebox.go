@@ -51,6 +51,7 @@ func (mpd *MPD) Status() *JukeboxStatus {
 		CurrentIndex: int(ParseNumber(string(status["song"]))),
 		Playing:      string(status["state"]) == "play",
 		Gain:         float32(ParseNumber(string(status["volume"])) / 100.0),
+		State:        string(status["state"]),
 	}
 	if elapsed, ok := status["elapsed"]; ok {
 		jukeboxStatus.Position = int(math.Round(ParseNumber(string(elapsed))))
@@ -102,7 +103,7 @@ func (mpd *MPD) Stop() {
 
 func (mpd *MPD) Skip(trackPos, seconds int) {
 	mpd.sendCommand(fmt.Sprintf("seek %d %d", trackPos, seconds))
-	mpd.Stop()
+	mpd.Start()
 }
 
 func (mpd *MPD) Clear() {

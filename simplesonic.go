@@ -48,7 +48,7 @@ func main() {
 	RegisterHandler("/rest/getInternetRadioStations.view", getInternetRadioStations)
 	RegisterHandler("/rest/getUser.view", getUser)
 	RegisterHandler("/rest/savePlayQueue.view", savePlayQueue)
-	RegisterHandler("/rest", unimplemented)
+	RegisterHandler("/rest/", unimplemented)
 	http.HandleFunc("/", unhandled)
 	server := http.Server{
 		Addr:         Config.Server.ListenAddress,
@@ -291,7 +291,11 @@ func jukeboxControl(exchange Exchange) {
 	case "stop":
 		jukebox.Stop()
 	case "skip":
+		status := jukebox.Status()
 		jukebox.Skip(int(ParseNumber(index)), int(ParseNumber(offset)))
+		if exchange.Request.URL.Query().Get("c") == "DSub" && status.State == "stop" {
+			jukebox.Stop()
+		}
 	case "clear":
 		jukebox.Clear()
 	case "remove":

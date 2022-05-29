@@ -301,6 +301,7 @@ type JukeboxStatus struct {
 	Playing      bool    `xml:"playing,attr" json:"playing"`
 	Gain         float32 `xml:"gain,attr" json:"gain"`
 	Position     int     `xml:"position,attr,omitempty" json:"position,omitempty"`
+	State        string  `xml:"-" json:"-"`
 }
 
 type JukeboxPlaylist struct {

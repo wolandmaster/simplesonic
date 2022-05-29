@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 )
@@ -33,7 +34,11 @@ func (e *errorString) Error() string {
 }
 
 func ProcessError(err error) {
-	if err != nil {
+	if errors.Is(err, syscall.ECONNRESET) {
+		log.Printf("Connection reset by peer: %v\n", err)
+	} else if errors.Is(err, syscall.EPIPE) {
+		log.Printf("Broken pipe: %v\n", err)
+	} else if err != nil {
 		log.Panicf("ERROR: %v\n", err)
 	}
 }
