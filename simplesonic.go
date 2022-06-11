@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -138,7 +139,28 @@ func getMusicDirectory(exchange Exchange) {
 
 func getArtistInfo(exchange Exchange) {
 	exchange.Response.ArtistInfo = &ArtistInfo{}
+	if baseDirectory, err := IsAllowedPath(DecodeId(exchange.Request.URL.Query().Get("id"))); err != nil {
+		exchange.SendError(0, err.Error())
+	} else if coverArtImage := baseDirectory + PathSeparator + "folder.jpg"; IsExists(coverArtImage) {
+		exchange.Response.ArtistInfo.SmallImageUrl = buildGetCoverArtUrl(exchange, coverArtImage, 64)
+		exchange.Response.ArtistInfo.MediumImageUrl = buildGetCoverArtUrl(exchange, coverArtImage, 126)
+		exchange.Response.ArtistInfo.LargeImageUrl = buildGetCoverArtUrl(exchange, coverArtImage, 0)
+	}
 	exchange.SendResponse()
+}
+
+func buildGetCoverArtUrl(exchange Exchange, coverArtImage string, size int) *string {
+	coverArtUrl := ProcessErrorArg(url.Parse(fmt.Sprintf("%s://%s",
+		exchange.Request.URL.Scheme, exchange.Request.Host))).(*url.URL)
+	coverArtUrl.Path = "/rest/getCoverArt.view"
+	coverArtUrlQuery := exchange.Request.URL.Query()
+	coverArtUrlQuery.Set("id", EncodeId(coverArtImage))
+	if size > 0 {
+		coverArtUrlQuery.Set("size", strconv.Itoa(size))
+	}
+	coverArtUrl.RawQuery = coverArtUrlQuery.Encode()
+	coverUrl := coverArtUrl.String()
+	return &coverUrl
 }
 
 func getAlbumList(exchange Exchange) {

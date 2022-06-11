@@ -61,6 +61,9 @@ func RegisterHandler(pattern string, handler func(Exchange)) {
 	http.HandleFunc(pattern, func(writer http.ResponseWriter, request *http.Request) {
 		exchange := Exchange{Request: request, Response: NewResponse(), requestTime: time.Now(), responseWriter: writer}
 		log.Printf("Request: %s\n", request.URL)
+		if request.URL.Scheme = "http"; request.TLS != nil {
+			request.URL.Scheme += "s"
+		}
 		defer func() {
 			if p := recover(); p != nil {
 				fmt.Printf("%v: %s\n", p, string(debug.Stack()))
